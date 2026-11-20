@@ -494,24 +494,6 @@ public final class RadiationSystemNT {
             List<ChunkRad> all = snapshot;
             if (all.isEmpty()) return true;
 
-            // Fork optimisation: a world without radiation pays nothing. The backup pass and the sweeps
-            // below are correct no-ops in that case, but each swept pass would still hand work to the
-            // pool and park the server thread for it. Count live sections instead and leave early.
-            int activeSections = 0;
-            for (ChunkRad cr : all) {
-                for (SectionRad sr : cr.sections) {
-                    if (sr != null && sr.built && sr.maxDensity > RAD_EPSILON) activeSections++;
-                }
-            }
-            if (activeSections == 0) return true;
-
-            // Fork optimisation: the pool handoff (submit + get, the server thread parked on
-            // ForkJoinTask.awaitDone) costs more than the array math itself unless the sweep has real
-            // work to spread over workers. Below the threshold every pass runs inline on the server
-            // thread; the parity bucketing makes the pairs disjoint, so per-chunk order never matters
-            // and the sequential result is identical to the parallel one.
-            boolean parallel = activeSections >= PARALLEL_THRESHOLD;
-
             // A worker can fail after earlier disjoint passes have already changed densities. Keep the
             // whole simulation step transactional so the next gate retries the old state, not a partial
             // step with a misleadingly successful result.
@@ -528,17 +510,17 @@ public final class RadiationSystemNT {
                 if (perm < 0) perm += 6;
 
                 switch (perm) {
-                    case 0 -> { sweepAxis(all, Axis.X, fx, parallel); sweepAxis(all, Axis.Z, fz, parallel); sweepY(all, yPar, parallel); }
-                    case 1 -> { sweepAxis(all, Axis.X, fx, parallel); sweepY(all, yPar, parallel); sweepAxis(all, Axis.Z, fz, parallel); }
-                    case 2 -> { sweepY(all, yPar, parallel); sweepAxis(all, Axis.Z, fz, parallel); sweepAxis(all, Axis.X, fx, parallel); }
-                    case 3 -> { sweepY(all, yPar, parallel); sweepAxis(all, Axis.X, fx, parallel); sweepAxis(all, Axis.Z, fz, parallel); }
-                    case 4 -> { sweepAxis(all, Axis.Z, fz, parallel); sweepAxis(all, Axis.X, fx, parallel); sweepY(all, yPar, parallel); }
-                    default -> { sweepAxis(all, Axis.Z, fz, parallel); sweepY(all, yPar, parallel); sweepAxis(all, Axis.X, fx, parallel); }
+                    case 0 -> { sweepAxis(all, Axis.X, fx); sweepAxis(all, Axis.Z, fz); sweepY(all, yPar); }
+                    case 1 -> { sweepAxis(all, Axis.X, fx); sweepY(all, yPar); sweepAxis(all, Axis.Z, fz); }
+                    case 2 -> { sweepY(all, yPar); sweepAxis(all, Axis.Z, fz); sweepAxis(all, Axis.X, fx); }
+                    case 3 -> { sweepY(all, yPar); sweepAxis(all, Axis.X, fx); sweepAxis(all, Axis.Z, fz); }
+                    case 4 -> { sweepAxis(all, Axis.Z, fz); sweepAxis(all, Axis.X, fx); sweepY(all, yPar); }
+                    default -> { sweepAxis(all, Axis.Z, fz); sweepY(all, yPar); sweepAxis(all, Axis.X, fx); }
                 }
 
                 // decay (per-chunk disjoint): postSweepDecayAndEffects.
                 double retention = retentionDt();
-                dispatch(all, parallel, () -> all.parallelStream().forEach(cr -> cr.decay(retention)));
+                submitJoin(() -> all.parallelStream().forEach(cr -> cr.decay(retention)));
                 return true;
             } catch (RuntimeException | Error failure) {
                 for (ChunkRad cr : all) {
@@ -552,30 +534,16 @@ public final class RadiationSystemNT {
             }
         }
 
-        /** Above this many live (radiated, built) sections the sweeps are worth handing to the pool;
-         * below it, the handoff costs more than the math it spreads. */
-        private static final int PARALLEL_THRESHOLD = 128;
-
-        /**
-         * Runs a pass on the pool and joins, or inline on the calling (server) thread when the step has
-         * too little work to amortise the handoff. Both paths produce identical results: every pass here
-         * splits into per-chunk (or per-pair) disjoint units via the parity bucketing, so unit order is
-         * free.
-         */
-        private void dispatch(List<ChunkRad> all, boolean parallel, Runnable task) {
-            if (parallel) submitJoin(task); else task.run();
-        }
-
         /**
          * One horizontal axis, two parity passes ({@code flip} reverses which parity goes first, the fork's
          * {@code fx}/{@code fz}). In a pass, only chunks whose {@code cx}/{@code cz} has the given parity
          * exchange with their +axis neighbour, so every chunk is written by at most one pair. The pairs are
          * disjoint and run in parallel with no locking (the fork's parity-bucketing).
          */
-        private void sweepAxis(List<ChunkRad> all, Axis axis, boolean flip, boolean parallel) {
+        private void sweepAxis(List<ChunkRad> all, Axis axis, boolean flip) {
             for (int pass = 0; pass < 2; pass++) {
                 final int p = (flip ? 1 - pass : pass);
-                dispatch(all, parallel, () -> all.parallelStream().forEach(a -> {
+                submitJoin(() -> all.parallelStream().forEach(a -> {
                     int coord = (axis == Axis.X) ? a.cx : a.cz;
                     if ((coord & 1) != p) return;
                     ChunkRad b = (axis == Axis.X)
@@ -591,8 +559,8 @@ public final class RadiationSystemNT {
 
         /** Y sweep: internal to each chunk, so whole chunks are disjoint and run in parallel.
          * {@code startParity} is the fork's {@code yPar} (which section-index parity exchanges first). */
-        private void sweepY(List<ChunkRad> all, int startParity, boolean parallel) {
-            dispatch(all, parallel, () -> all.parallelStream().forEach(cr -> cr.exchangeY(startParity)));
+        private void sweepY(List<ChunkRad> all, int startParity) {
+            submitJoin(() -> all.parallelStream().forEach(cr -> cr.exchangeY(startParity)));
         }
     }
 
