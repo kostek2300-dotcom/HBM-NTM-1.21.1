@@ -1,5 +1,6 @@
-# Builds every node (chiseledBuild) against Golem Core's and NTM - Continuum's main branches and publishes the release
-# jars, NTM: Space's plus the matching NTM - Continuum and Golem Core jars it was built against, as a GitHub pre-release.
+# Builds every node (chiseledBuild) against Golem Core's and NTM - Continuum's main branches and publishes
+# one pre-release per Minecraft version. Each release holds only self-contained NTM: Space jars, with the
+# matching NTM - Continuum (hbm) and Golem Core jars embedded jar-in-jar by .github/scripts/embed_deps.py.
 # Runs on pushes to main that change a build input (see paths below) and on demand.
 #
 # Repository secrets: HBM_TOKEN, a fine-grained token with read access to Warfactory-Official/NTM-Continuum while
@@ -115,9 +116,14 @@ jobs:
           REPO: ${{ github.repository }}
         run: |
           version=$(grep -E '^mod.version=' new-hbm-space/gradle.properties | cut -d= -f2 | tr -d '[:space:]')
+          # Tags look like v1.0.3-build.42+1.21.1 (one per Minecraft version per build); the number
+          # after '-build.' decides, the Minecraft suffix is ignored.
           last=$(gh release list --repo "$REPO" --limit 200 --json tagName,isPrerelease \
             --jq '.[] | select(.isPrerelease) | .tagName' \
-            | awk -v p="v${version}-build." 'index($0, p) == 1 && substr($0, length(p) + 1) ~ /^[0-9]+$/ { print substr($0, length(p) + 1) }' \
+            | awk -v p="v${version}-build." 'index($0, p) == 1 {
+                s = substr($0, length(p) + 1)
+                if (match(s, /^[0-9]+/)) print substr(s, RSTART, RLENGTH)
+              }' \
             | sort -n | tail -n 1)
           echo "number=$(( ${last:-0} + 1 ))" >> "$GITHUB_OUTPUT"
           echo "Build $(( ${last:-0} + 1 )) of $version"
@@ -138,39 +144,60 @@ jobs:
           ls -l dist
           ls dist | grep -q '^ntmspace-' || { echo "No NTM: Space jars produced"; exit 1; }
           version=$(grep -E '^mod.version=' new-hbm-space/gradle.properties | cut -d= -f2 | tr -d '[:space:]')
-          echo "tag=v${version}-build.${{ steps.build.outputs.number }}" >> "$GITHUB_OUTPUT"
+          echo "build=${{ steps.build.outputs.number }}" >> "$GITHUB_OUTPUT"
           echo "version=${version}" >> "$GITHUB_OUTPUT"
           echo "golem=$(git -C Golem-Core rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
           echo "hbm=$(git -C NTM-Continuum rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
 
-      - name: Create pre-release
-        uses: softprops/action-gh-release@v2
-        with:
-          repository: ${{ github.repository }}
-          tag_name: ${{ steps.jars.outputs.tag }}
-          target_commitish: ${{ github.sha }}
-          name: "NTM: Space ${{ steps.jars.outputs.version }} build ${{ steps.build.outputs.number }}"
-          prerelease: true
-          generate_release_notes: true
-          body: |
-            Automated pre-release build. Not for general use.
+      # Bakes the matching hbm (NTM - Continuum) and golemcore jars into every NTM: Space jar
+      # (Fabric jar-in-jar, Forge/NeoForge JarJar), so each published jar is self-contained.
+      - name: Embed dependencies (jar-in-jar)
+        run: |
+          python3 .github/scripts/embed_deps.py dist dist/all-in-one
 
-            Each `ntmspace-<loader>-<version>+<mc>` jar needs the `hbm-<loader>` jar (NTM - Continuum, built from
-            `${{ steps.jars.outputs.hbm }}`) and `golemcore-<loader>` jar (Golem Core, built from
-            `${{ steps.jars.outputs.golem }}`) for the same `<mc>`, both included.
-          files: dist/*.jar
+      # One pre-release per Minecraft version, each holding only the self-contained NTM: Space jars.
+      - name: Create pre-releases (one per Minecraft version)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ steps.jars.outputs.tag }}
+          VERSION: ${{ steps.jars.outputs.version }}
+          BUILD: ${{ steps.jars.outputs.build }}
+          GOLEM: ${{ steps.jars.outputs.golem }}
+          HBM: ${{ steps.jars.outputs.hbm }}
+          SHA: ${{ github.sha }}
+        run: |
+          shopt -s nullglob
+          {
+            echo "Self-contained pre-release build: every jar has HBM (NTM - Continuum, \`${HBM}\`) and Golem Core (\`${GOLEM}\`) already embedded (jar-in-jar). Just drop the jar for your loader into \`mods\` — nothing else needed."
+            echo ''
+            echo '**Do not keep the old separate `hbm-` / `golemcore-` jars in `mods`** alongside these: the mods would load twice.'
+            echo ''
+            echo 'Automated build. Not for general use.'
+          } > release-notes.md
+          for mc in 1.21.1 1.20.1 26.1; do
+            files=(dist/all-in-one/$mc/*.jar)
+            [ ${#files[@]} -gt 0 ] || { echo "No all-in-one jars for $mc"; exit 1; }
+            echo "Creating release ${TAG}+${mc}"
+            gh release create "${TAG}+${mc}" \
+              --repo "$REPO" --target "$SHA" --prerelease \
+              --title "NTM: Space $VERSION build $BUILD ($mc)" \
+              --notes-file release-notes.md "${files[@]}"
+          done
 
-      # Keep only the newest automated build: delete every older pre-release this workflow made (its tags
-      # end in -build.<build number>) along with its tag. Real releases and beta/alpha tags never match.
+      # Keep only the newest automated build: delete every older pre-release this workflow made (its
+      # tags look like v1.0.3-build.42 or v1.0.3-build.42+1.21.1) along with its tag. Real releases and
+      # beta/alpha tags never match.
       - name: Delete previous pre-releases
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
-          KEEP: ${{ steps.jars.outputs.tag }}
+          BUILD: ${{ steps.jars.outputs.build }}
         run: |
           gh release list --repo "$REPO" --limit 200 --json tagName,isPrerelease \
             --jq '.[] | select(.isPrerelease) | .tagName' \
-            | { grep -E '^v.+-build\.[0-9]+$' || true; } | { grep -vxF "$KEEP" || true; } \
+            | { grep -E '^v[0-9][^-]*-build\.[0-9]+(\+.+)?$' || true; } \
+            | { grep -vE -- "-build\.${BUILD}(\+|$)" || true; } \
             | while read -r tag; do
                 echo "Deleting pre-release $tag"
                 gh release delete "$tag" --repo "$REPO" --cleanup-tag --yes
