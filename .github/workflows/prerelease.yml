@@ -144,6 +144,8 @@ jobs:
           ls -l dist
           ls dist | grep -q '^ntmspace-' || { echo "No NTM: Space jars produced"; exit 1; }
           version=$(grep -E '^mod.version=' new-hbm-space/gradle.properties | cut -d= -f2 | tr -d '[:space:]')
+          # Base tag for this build; the per-Minecraft releases append '+<minecraft version>'.
+          echo "tag=v${version}-build.${{ steps.build.outputs.number }}" >> "$GITHUB_OUTPUT"
           echo "build=${{ steps.build.outputs.number }}" >> "$GITHUB_OUTPUT"
           echo "version=${version}" >> "$GITHUB_OUTPUT"
           echo "golem=$(git -C Golem-Core rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
