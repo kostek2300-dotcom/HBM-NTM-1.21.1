@@ -153,7 +153,8 @@ jobs:
       # (Fabric jar-in-jar, Forge/NeoForge JarJar), so each published jar is self-contained.
       - name: Embed dependencies (jar-in-jar)
         run: |
-          python3 .github/scripts/embed_deps.py dist dist/all-in-one
+          # The repository checkout lands in ./new-hbm-space, where the script lives too.
+          python3 new-hbm-space/.github/scripts/embed_deps.py dist dist/all-in-one
 
       # One pre-release per Minecraft version, each holding only the self-contained NTM: Space jars.
       - name: Create pre-releases (one per Minecraft version)
