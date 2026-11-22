@@ -1,0 +1,181 @@
+package dev.golem.core.render;
+
+//? if <26.1 {
+/*import com.mojang.blaze3d.vertex.PoseStack;
+ import com.mojang.blaze3d.vertex.VertexConsumer;
+import net.minecraft.client.gui.Font;
+import net.minecraft.util.FormattedCharSequence;
+import net.minecraft.client.renderer.MultiBufferSource;
+import net.minecraft.client.renderer.RenderType;
+
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.List;
+
+/^*
+ * {@link SubmitSink} for versions without the submit pipeline: records submissions during the pass and
+ * draws them into a {@code MultiBufferSource} at the end.
+ *
+ * <p>Drawing eagerly would discard {@link SubmitSink#order}: before 26.1 geometry reaches the buffer source in
+ * call order. Replaying sorted by order reproduces 26.1's result. The sort is stable, so submissions sharing an
+ * order keep their sequence and order 0 alone behaves like immediate drawing.
+ *
+ * <p>The pose is <b>copied</b> at submit time. {@link PoseStack#last()} returns the live top {@code Pose} and
+ * the transform methods mutate it in place, and callers keep transforming and popping before the flush.
+ ^/
+public final class RecordingSubmitSink implements SubmitSink {
+
+    private sealed interface Entry permits GeometryEntry, ItemEntry, TextEntry, BlockEntry, MovingBlockEntry,
+            BlockEntityEntry { int order(); }
+    private record GeometryEntry(int order, PoseStack pose, RenderType renderType,
+                                 CustomGeometry geometry) implements Entry {}
+    private record ItemEntry(int order, PoseStack poseStack, CompatItemRenderState item, int light,
+                             int overlay) implements Entry {}
+    private record BlockEntry(int order, PoseStack poseStack, net.minecraft.world.level.block.state.BlockState state,
+                              int light, int overlay) implements Entry {}
+    private record MovingBlockEntry(int order, PoseStack poseStack, net.minecraft.world.level.block.state.BlockState state,
+                                    net.minecraft.world.level.Level level, net.minecraft.core.BlockPos pos,
+                                    net.minecraft.core.BlockPos seedPos) implements Entry {}
+    private record BlockEntityEntry(int order, PoseStack poseStack,
+                                    net.minecraft.world.level.block.entity.BlockEntity blockEntity,
+                                    float partialTicks) implements Entry {}
+    private record TextEntry(int order, PoseStack poseStack, Font font, float x, float y, FormattedCharSequence text,
+                             boolean shadow, Font.DisplayMode mode, int light, int color, int background) implements Entry {}
+
+    // One stable stream is essential: 26.1 orders geometry, items, and text together, not per kind.
+    private final List<Entry> entries = new ArrayList<>();
+    private final int order;
+
+    public RecordingSubmitSink() {
+        this(0);
+    }
+
+    private RecordingSubmitSink(int order) {
+        this.order = order;
+    }
+
+    /^* A view tagging submissions with a different order, sharing this sink's entry list. ^/
+    private RecordingSubmitSink(int order, RecordingSubmitSink parent) {
+        this.order = order;
+        // Deliberately aliases the parent's list rather than copying, so one flush drains everything
+        // submitted through any view.
+        this.sharedWith = parent;
+    }
+
+    private RecordingSubmitSink sharedWith;
+    private boolean sceneCaptured;
+
+    private List<Entry> sink() {
+        return sharedWith != null ? sharedWith.sink() : entries;
+    }
+
+    private RecordingSubmitSink rootSink() {
+        return sharedWith == null ? this : sharedWith.rootSink();
+    }
+
+    private static void flushPending(MultiBufferSource source) {
+        if (source instanceof MultiBufferSource.BufferSource buffers) buffers.endBatch();
+    }
+
+    @Override
+    public void submitCustomGeometry(PoseStack poseStack, RenderType renderType, CustomGeometry geometry) {
+        // Copy, never keep last(): it is the LIVE top Pose and translate/mulPose/scale mutate it, so a
+        // kept reference draws every entry at that stack level with the pose held at flush time. A
+        // renderer that accumulates joint transforms between submissions (the assembly machine's
+        // arms) would draw its parts on top of each other.
+        sink().add(new GeometryEntry(order, Poses.copyOf(poseStack.last()), renderType, geometry));
+    }
+
+    @Override
+    public void submitItem(PoseStack poseStack, CompatItemRenderState item, int light, int overlay, int seed) {
+        if (item.isEmpty()) return;
+        // The PoseStack is copied, not snapshotted to a Pose: ItemRenderer needs a full stack to push
+        // and pop around its own transforms, and the caller is free to pop before the flush.
+        PoseStack copy = Poses.copyOf(poseStack.last());
+        sink().add(new ItemEntry(order, copy, item, light, overlay));
+    }
+
+    @Override
+    public void submitBlock(PoseStack poseStack, CompatBlockRenderState block, int light, int overlay) {
+        if (block.isEmpty() || block.state == null) return;
+        sink().add(new BlockEntry(order, Poses.copyOf(poseStack.last()), block.state, light, overlay));
+    }
+
+    @Override
+    public void submitMovingBlock(PoseStack poseStack, CompatMovingBlock block) {
+        if (block.isEmpty() || block.blockState() == null || block.level == null || block.pos == null) return;
+        sink().add(new MovingBlockEntry(order, Poses.copyOf(poseStack.last()), block.blockState(), block.level,
+                block.pos, block.seedPos == null ? block.pos : block.seedPos));
+    }
+
+    @Override
+    public void submitBlockEntity(PoseStack poseStack, CompatBlockEntityRenderState blockEntity) {
+        if (blockEntity.isEmpty() || blockEntity.blockEntity == null) return;
+        sink().add(new BlockEntityEntry(order, Poses.copyOf(poseStack.last()), blockEntity.blockEntity,
+                blockEntity.partialTicks));
+    }
+
+    @Override
+    public void submitText(PoseStack poseStack, Font font, float x, float y, FormattedCharSequence text,
+                           boolean shadow, Font.DisplayMode mode, int light, int color, int background) {
+        PoseStack copy = Poses.copyOf(poseStack.last());
+        sink().add(new TextEntry(order, copy, font, x, y, text, shadow, mode, light,
+                dev.golem.core.gui.GuiDraw.textColor(color), background));
+    }
+
+    @Override
+    public SubmitSink order(int newOrder) {
+        return new RecordingSubmitSink(newOrder, this);
+    }
+
+    /^* Draws everything recorded, lowest order first, then clears. ^/
+    public void flush(MultiBufferSource bufferSource, net.minecraft.world.level.@org.jspecify.annotations.Nullable Level level) {
+        List<Entry> all = sink();
+        RecordingSubmitSink root = rootSink();
+        try {
+            all.sort(Comparator.comparingInt(Entry::order));
+            for (Entry entry : all) {
+                if (entry instanceof GeometryEntry e) {
+                    VertexConsumer buffer;
+                    if (!root.sceneCaptured && HeatDistortionRenderType.isSceneSampling(e.renderType())) {
+                        // Flush all pending buffers before the copy. Otherwise the framebuffer still lacks
+                        // geometry queued by preceding entries and the shader samples an intermediate scene.
+                        flushPending(bufferSource);
+                        HeatDistortionRenderType.prepareSceneForPass();
+                        root.sceneCaptured = true;
+                        buffer = bufferSource.getBuffer(e.renderType());
+                    } else {
+                        buffer = bufferSource.getBuffer(e.renderType());
+                    }
+                    // flatCutout: 1.7 drew these with GL_LIGHTING off; see FlatCutoutRenderType.flatten
+                    if (FlatCutoutRenderType.isFlat(e.renderType())) buffer = FlatCutoutRenderType.flatten(buffer);
+                    e.geometry().render(e.pose().last(), buffer);
+                } else if (entry instanceof ItemEntry e) {
+                    e.item().draw(e.poseStack(), bufferSource, e.light(), e.overlay(), level);
+                } else if (entry instanceof BlockEntry e) {
+                    net.minecraft.client.Minecraft.getInstance().getBlockRenderer()
+                            .renderSingleBlock(e.state(), e.poseStack(), bufferSource, e.light(), e.overlay());
+                } else if (entry instanceof MovingBlockEntry e) {
+                    // Vanilla's falling-block path: the block is tesselated against the live level so it picks
+                    // up the light of the position it is passing through, seeded by where it started.
+                    net.minecraft.client.renderer.block.BlockRenderDispatcher dispatcher =
+                            net.minecraft.client.Minecraft.getInstance().getBlockRenderer();
+                    VertexConsumer buffer = bufferSource.getBuffer(
+                            net.minecraft.client.renderer.ItemBlockRenderTypes.getMovingBlockRenderType(e.state()));
+                    dispatcher.renderBatched(e.state(), e.pos(), e.level(), e.poseStack(), buffer, false,
+                            net.minecraft.util.RandomSource.create(e.state().getSeed(e.seedPos())));
+                } else if (entry instanceof BlockEntityEntry e) {
+                    net.minecraft.client.Minecraft.getInstance().getBlockEntityRenderDispatcher()
+                            .render(e.blockEntity(), e.partialTicks(), e.poseStack(), bufferSource);
+                } else if (entry instanceof TextEntry e) {
+                    e.font().drawInBatch(e.text(), e.x(), e.y(), e.color(), e.shadow(), e.poseStack().last().pose(),
+                            bufferSource, e.mode(), e.background(), e.light());
+                }
+            }
+        } finally {
+            all.clear();
+            root.sceneCaptured = false;
+        }
+    }
+}
+*///?}

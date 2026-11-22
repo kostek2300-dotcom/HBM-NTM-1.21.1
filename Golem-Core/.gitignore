@@ -1,0 +1,43 @@
+### Gradle
+.gradle/
+build/
+!gradle/wrapper/gradle-wrapper.jar
+
+### Stonecutter
+versions/*/build/
+versions/*/.gradle/
+versions/*/runs/
+.stonecutter-cache/
+
+### Dev runs
+runs/
+run/
+
+### Logs
+# Game and launcher logs. `logs/` has no leading slash so it matches at any depth — the dev runs write
+# to versions/<node>/logs/, which the `runs/` rule above does not cover.
+logs/
+*.log
+*.log.gz
+
+### IDE
+.idea/
+*.iml
+*.ipr
+*.iws
+out/
+.vscode/
+.eclipse/
+.classpath
+.project
+.settings/
+bin/
+
+### Java
+*.class
+hs_err_pid*
+replay_pid*
+
+### OS
+.DS_Store
+Thumbs.db

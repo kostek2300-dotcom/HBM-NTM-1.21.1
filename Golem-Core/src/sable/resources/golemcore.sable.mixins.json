@@ -1,0 +1,12 @@
+{
+  "required": true,
+  "minVersion": "0.8",
+  "package": "dev.golem.core.sable.mixin",
+  "plugin": "dev.golem.core.sable.mixin.SableMixinPlugin",
+  "compatibilityLevel": "JAVA_21",
+  "mixins": ["MixinSubLevelAssemblyHelper"],
+  "client": ["MixinCompatParticle"],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}

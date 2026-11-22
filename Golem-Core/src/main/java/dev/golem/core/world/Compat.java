@@ -1,0 +1,791 @@
+package dev.golem.core.world;
+
+import java.util.UUID;
+import net.minecraft.network.chat.Component;
+import net.minecraft.server.level.ServerBossEvent;
+import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.BossEvent;
+
+import net.minecraft.server.level.ServerLevel;
+import net.minecraft.world.damagesource.DamageSource;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.player.Inventory;
+import net.minecraft.world.inventory.Slot;
+import net.minecraft.world.item.Item;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.level.Level;
+
+/**
+ * Assorted vanilla operations whose spelling or shape changed between 1.21.1 and 26.1.
+ *
+ * <p>Each difference here is small, mechanical and used from a handful of call sites. Anything that needs
+ * real translation logic gets its own type (see {@code dev.golem.core.data}).
+ *
+ * <p>None of these are Stonecutter string replacements, because a replacement must be reversible 1:1 and
+ * none of these is a plain rename: {@code hurt} already exists on both eras with a different meaning, and
+ * the fuel lookup is a different call graph.
+ */
+public final class Compat {
+
+    private Compat() {}
+
+    /**
+     * Damages an entity. 26.1 split the server-authoritative path into {@code hurtServer}, which takes
+     * the level explicitly; older versions have only {@code hurt}.
+     */
+    public static boolean hurt(Entity entity, ServerLevel level, DamageSource source, float amount) {
+        //? if >=26.1 {
+        return entity.hurtServer(level, source, amount);
+        //?} else {
+        /*return entity.hurt(source, amount);
+        *///?}
+    }
+
+    /** Tests a block against the tool tier used by the shared HBM mining tools. */
+    public static boolean isCorrectToolForDrops(
+            net.minecraft.world.level.block.state.BlockState state, int tier) {
+        //? if >=1.21.1 {
+        if (tier >= 4) return !state.is(net.minecraft.tags.BlockTags.INCORRECT_FOR_NETHERITE_TOOL);
+        if (tier == 3) return !state.is(net.minecraft.tags.BlockTags.INCORRECT_FOR_DIAMOND_TOOL);
+        if (tier == 2) return !state.is(net.minecraft.tags.BlockTags.INCORRECT_FOR_IRON_TOOL);
+        if (tier == 1) return !state.is(net.minecraft.tags.BlockTags.INCORRECT_FOR_STONE_TOOL);
+        return !state.is(net.minecraft.tags.BlockTags.INCORRECT_FOR_WOODEN_TOOL);
+        //?} else {
+        /*if (tier >= 4) return true;
+        if (tier == 3) return !state.is(net.minecraft.tags.BlockTags.NEEDS_DIAMOND_TOOL);
+        if (tier == 2) return !state.is(net.minecraft.tags.BlockTags.NEEDS_IRON_TOOL);
+        if (tier == 1) return !state.is(net.minecraft.tags.BlockTags.NEEDS_STONE_TOOL);
+        return !state.requiresCorrectToolForDrops();
+        *///?}
+    }
+
+    /**
+     * A player's empty-hand use of a block, as the server's interaction dispatch would run it.
+     *
+     * <p>26.1 split the block hook into {@code useWithoutItem}/{@code useItemOn}; below that a single
+     * {@code use} took the hand. Tests that walk the real right-click path call this one method.
+     */
+    public static net.minecraft.world.InteractionResult useBlockWithoutItem(
+            net.minecraft.world.level.block.state.BlockState state, Level level,
+            net.minecraft.world.entity.player.Player player, net.minecraft.world.phys.BlockHitResult hit) {
+        //? if >=1.21.1 {
+        return state.useWithoutItem(level, player, hit);
+        //?} else {
+        /*return state.use(level, player, net.minecraft.world.InteractionHand.MAIN_HAND, hit);
+        *///?}
+    }
+
+    /**
+     * Runs an entity's fall-damage path for a fall of {@code fallDistance} blocks.
+     *
+     * <p>The first parameter widened from {@code float} to {@code double} at 26.1. Callers keep passing a
+     * float; only this method knows the difference.
+     */
+    public static boolean causeFallDamage(Entity entity, float fallDistance, float damageMultiplier,
+            DamageSource source) {
+        //? if >=26.1 {
+        return entity.causeFallDamage((double) fallDistance, damageMultiplier, source);
+        //?} else {
+        /*return entity.causeFallDamage(fallDistance, damageMultiplier, source);
+        *///?}
+    }
+
+    /**
+     * The hotbar slot a player currently has selected.
+     *
+     * <p>26.1 made {@code Inventory.selected} private behind {@code getSelectedSlot()}; below that the
+     * field is public and there is no accessor.
+     */
+    public static int selectedSlot(net.minecraft.world.entity.player.Player player) {
+        //? if >=26.1 {
+        return player.getInventory().getSelectedSlot();
+        //?} else {
+        /*return player.getInventory().selected;
+        *///?}
+    }
+
+    /** Sets the selected hotbar slot across the private-access change at 26.1. */
+    public static void setSelectedSlot(net.minecraft.world.entity.player.Player player, int slot) {
+        //? if >=26.1 {
+        player.getInventory().setSelectedSlot(slot);
+        //?} else {
+        /*player.getInventory().selected = slot;
+        *///?}
+    }
+
+    /** Tells the client about a server-side selected-slot change across the packet rename. */
+    public static void syncSelectedSlot(net.minecraft.server.level.ServerPlayer player) {
+        //? if >=26.1 {
+        player.connection.send(new net.minecraft.network.protocol.game.ClientboundSetHeldSlotPacket(
+                selectedSlot(player)));
+        //?} else {
+        /*player.connection.send(new net.minecraft.network.protocol.game.ClientboundSetCarriedItemPacket(
+                selectedSlot(player)));
+        *///?}
+    }
+
+    /**
+     * Adds the 3×9 inventory grid plus hotbar at the given origin, reproducing vanilla's layout
+     * exactly (18px pitch, hotbar 58px below the grid's top row) so existing screen textures line up.
+     *
+     * <p>Takes a slot sink rather than the menu itself because {@code AbstractContainerMenu.addSlot}
+     * is protected, so only the menu subclass can hand it over, as {@code this::addSlot}. 26.1's own
+     * {@code addStandardInventorySlots} is likewise protected, so the call site picks between them.
+     */
+    public static void addPlayerInventory(java.util.function.Consumer<Slot> addSlot, Inventory inventory, int x, int y) {
+        for (int row = 0; row < 3; row++) {
+            for (int col = 0; col < 9; col++) {
+                addSlot.accept(new Slot(inventory, col + row * 9 + 9, x + col * 18, y + row * 18));
+            }
+        }
+        for (int col = 0; col < 9; col++) {
+            addSlot.accept(new Slot(inventory, col, x + col * 18, y + 58));
+        }
+    }
+
+    /**
+     * Furnace burn time for a stack, in ticks; 0 when the stack is not a fuel.
+     *
+     * <p>26.1 moved fuel data onto the level ({@code level.fuelValues()}); before 1.21.2 it was a
+     * static map on {@code AbstractFurnaceBlockEntity}.
+     */
+    public static int burnDuration(Level level, ItemStack stack) {
+        //? if >=26.1 {
+        return level == null ? 0 : level.fuelValues().burnDuration(stack);
+        //?} elif forge {
+        /*// ForgeHooks asks the item and then FurnaceFuelBurnTimeEvent, as the vanilla furnace does;
+        // the static vanilla fuel map alone misses every modded fuel on Forge.
+        return stack.isEmpty() ? 0 : Math.max(0, net.minecraftforge.common.ForgeHooks.getBurnTime(stack, null));
+        *///?} elif neoforge {
+        /*// the neoforge:furnace_fuels data map and the burn-time event, as the vanilla furnace reads them
+        return stack.isEmpty() ? 0 : Math.max(0, stack.getBurnTime(null));
+        *///?} else {
+        /*if (stack.isEmpty()) return 0;
+        Integer time = net.minecraft.world.level.block.entity.AbstractFurnaceBlockEntity
+                .getFuel().get(stack.getItem());
+        return time == null ? 0 : time;
+        *///?}
+    }
+
+    /**
+     * Makes a block item's translation key {@code block.<ns>.<item name>}: 26.1's {@code useBlockDescriptionPrefix}.
+     *
+     * <p>Before 26.1 {@code BlockItem.getDescriptionId} defers to its block instead, which is the same key only while the
+     * item is named like its block. An item of a block family (one block, several named items, such as
+     * {@code concrete_ext_bronze} of {@code concrete_ext}) would get its block's key below 26.1 and its own key on
+     * 26.1, and code reading the key (1.7's metal-name Faraday rule) would disagree. So below 26.1 the properties are
+     * marked and a {@link CompatBlockItem} built from them answers 26.1's key; another {@code BlockItem} keeps its
+     * block's.
+     */
+    public static Item.Properties blockDescription(Item.Properties properties) {
+        //? if >=26.1 {
+        return properties.useBlockDescriptionPrefix();
+        //?} else {
+        /*BLOCK_DESCRIPTION.add(properties);
+        return properties;
+        *///?}
+    }
+
+    //? if <26.1 {
+    /*private static final java.util.Set<Item.Properties> BLOCK_DESCRIPTION =
+            java.util.Collections.synchronizedSet(java.util.Collections.newSetFromMap(new java.util.WeakHashMap<>()));
+
+    static boolean takeBlockDescription(Item.Properties properties) {
+        return BLOCK_DESCRIPTION.remove(properties);
+    }
+    *///?}
+
+    /**
+     * Chunk coordinates. 26.1 made {@code ChunkPos} a record with {@code x()}/{@code z()} accessors;
+     * before that they were public fields. Helpers rather than a replacement, because {@code .x()} is
+     * too common a spelling to rewrite blindly: {@code Vec3}, {@code Vector3f} and others have it too.
+     */
+    public static int chunkX(net.minecraft.world.level.ChunkPos pos) {
+        //? if >=26.1 {
+        return pos.x();
+        //?} else {
+        /*return pos.x;
+        *///?}
+    }
+
+    /** @see #chunkX */
+    public static int chunkZ(net.minecraft.world.level.ChunkPos pos) {
+        //? if >=26.1 {
+        return pos.z();
+        //?} else {
+        /*return pos.z;
+        *///?}
+    }
+
+    /**
+     * Whether a block state renders as a full opaque cube.
+     *
+     * <p>26.1's {@code isSolidRender()} takes no arguments; before that it required a
+     * {@code (BlockGetter, BlockPos)} pair. Several call sites, notably fallout's block predicates,
+     * only have the state, so the older branch approximates with {@code canOcclude()}, the state's own
+     * occlusion flag. It agrees for every ordinary full block and differs only for states whose
+     * occlusion depends on neighbours.
+     */
+    public static boolean isSolidRender(net.minecraft.world.level.block.state.BlockState state) {
+        //? if >=26.1 {
+        return state.isSolidRender();
+        //?} else {
+        /*return state.canOcclude();
+        *///?}
+    }
+
+    /**
+     * Whether a block state renders as a full opaque cube <em>at a position</em>: the exact form,
+     * for the call sites that have a level and a position in scope (an explosion deciding whether the
+     * block under a cleared space can hold fire, for instance).
+     *
+     * <p>Prefer this over {@link #isSolidRender(BlockState)}: that one has to approximate below 26.1
+     * because it has nothing but the state.
+     */
+    public static boolean isSolidRender(net.minecraft.world.level.block.state.BlockState state,
+                                        net.minecraft.world.level.BlockGetter level,
+                                        net.minecraft.core.BlockPos pos) {
+        //? if >=26.1 {
+        return state.isSolidRender();
+        //?} else {
+        /*return state.isSolidRender(level, pos);
+        *///?}
+    }
+
+    /**
+     * Every item in a tag, as stacks. 26.1's {@code Registry.get(TagKey)} returns the holder set
+     * directly; before that the accessor is called {@code getTag}. Same result either way, and the
+     * empty case is an empty list rather than a throw on both.
+     */
+    public static java.util.List<net.minecraft.world.item.ItemStack> itemsInTag(
+            net.minecraft.tags.TagKey<Item> tag) {
+        java.util.List<net.minecraft.world.item.ItemStack> stacks = new java.util.ArrayList<>();
+        //? if >=26.1 {
+        net.minecraft.core.registries.BuiltInRegistries.ITEM.get(tag)
+                .ifPresent(named -> named.forEach(h -> stacks.add(new net.minecraft.world.item.ItemStack(h))));
+        //?} else {
+        /*net.minecraft.core.registries.BuiltInRegistries.ITEM.getTag(tag)
+                .ifPresent(named -> named.forEach(h -> stacks.add(new net.minecraft.world.item.ItemStack(h))));
+        *///?}
+        return stacks;
+    }
+
+    /**
+     * Every item tag currently registered, as tag keys.
+     *
+     * <p>26.1's {@code getTags()} streams the {@code HolderSet.Named} itself (with {@code key()});
+     * older versions stream a {@code Pair} of key and set. Callers that only want the keys (to match tag
+     * paths against a naming convention, say) need not know which.
+     */
+    public static java.util.List<net.minecraft.tags.TagKey<Item>> itemTagKeys() {
+        java.util.List<net.minecraft.tags.TagKey<Item>> keys = new java.util.ArrayList<>();
+        //? if >=26.1 {
+        net.minecraft.core.registries.BuiltInRegistries.ITEM.getTags().forEach(named -> keys.add(named.key()));
+        //?} else {
+        /*net.minecraft.core.registries.BuiltInRegistries.ITEM.getTags().forEach(pair -> keys.add(pair.getFirst()));
+        *///?}
+        return keys;
+    }
+
+    /**
+     * Raytraces against blocks. Wraps the whole call rather than just the trailing argument because the
+     * argument's <em>type</em> changed, not only its value: 26.1's {@code ClipContext} takes a
+     * {@code CollisionContext}, older versions take a nullable {@code Entity}. A helper returning "the
+     * right context" therefore cannot exist; only a helper that performs the clip.
+     */
+    public static net.minecraft.world.phys.BlockHitResult clip(Level level,
+            net.minecraft.world.phys.Vec3 from, net.minecraft.world.phys.Vec3 to,
+            net.minecraft.world.level.ClipContext.Block block,
+            net.minecraft.world.level.ClipContext.Fluid fluid) {
+        return level.clip(new net.minecraft.world.level.ClipContext(from, to, block, fluid,
+                //? if >=1.20.5 {
+                net.minecraft.world.phys.shapes.CollisionContext.empty()
+                //?} else {
+                /*(net.minecraft.world.entity.Entity) null
+                *///?}
+        ));
+    }
+
+    /**
+     * The leftover stack for a fuel or crafting input: an empty bucket for lava, and so on.
+     *
+     * <p>26.1 models the remainder as an item instance that must be instantiated; older versions hand
+     * back the {@code Item} itself. Returns {@link ItemStack#EMPTY} when there is no remainder.
+     */
+    public static ItemStack craftingRemainder(ItemStack stack) {
+        Item added = Remainders.of(stack.getItem());
+        if (added != null) return new ItemStack(added);
+        // The accessor itself was renamed (getCraftingRemainder / getCraftingRemainingItem), so the
+        // whole call sits inside the guard. A Stonecutter replacement would live in the consuming
+        // project's config, and this library has to compile on its own.
+        //? if >=26.1 {
+        net.minecraft.world.item.component.UseRemainder component =
+                stack.get(net.minecraft.core.component.DataComponents.USE_REMAINDER);
+        if (component != null) return component.convertInto().create();
+        var remainder = stack.getItem().getCraftingRemainder();
+        return remainder != null ? remainder.create() : ItemStack.EMPTY;
+        //?} else {
+        /*var remainder = stack.getItem().getCraftingRemainingItem();
+        return remainder != null ? new ItemStack(remainder) : ItemStack.EMPTY;
+        *///?}
+    }
+
+    /** Applies an item's crafting remainder property across the supported item-property APIs. */
+    public static Item.Properties craftingRemainder(Item.Properties properties, Item remainder) {
+        return properties.craftRemainder(remainder);
+    }
+
+    /** Counts non-empty stacks stored in an item's container component or legacy block-entity tag. */
+    public static int containerItemCount(ItemStack stack, int slots) {
+        //? if >=1.20.5 {
+        net.minecraft.world.item.component.ItemContainerContents contents =
+                stack.get(net.minecraft.core.component.DataComponents.CONTAINER);
+        //? if >=26.1 {
+        return contents == null ? 0 : (int) contents.nonEmptyItemCopyStream().count();
+        //?} else {
+        /*return contents == null ? 0 : (int) contents.nonEmptyStream().count();
+        *///?}
+        //?} else {
+        /*net.minecraft.nbt.CompoundTag tag = stack.getTag();
+        if (tag == null || !tag.contains("BlockEntityTag", net.minecraft.nbt.Tag.TAG_COMPOUND)) return 0;
+        net.minecraft.core.NonNullList<ItemStack> items = net.minecraft.core.NonNullList.withSize(slots, ItemStack.EMPTY);
+        net.minecraft.world.ContainerHelper.loadAllItems(tag.getCompound("BlockEntityTag"), items);
+        int used = 0;
+        for (ItemStack item : items) if (!item.isEmpty()) used++;
+        return used;
+        *///?}
+    }
+
+    /**
+     * Runs a block entity's removal side effects: dropping its inventory, normally.
+     *
+     * <p>26.1 calls {@code BlockEntity.preRemoveSideEffects} itself whenever a block entity is removed,
+     * and its default drops the contents of any {@code Container}. No such hook or default exists below
+     * 26.1, where dropping is each block's own business. Call this from a block's removal override and
+     * both eras behave the same: on 26.1 it does nothing, because vanilla has already done it.
+     *
+     * <p>Safe to call for blocks with no block entity, and for block entities that are not containers.
+     */
+    public static void preRemoveSideEffects(Level level, net.minecraft.core.BlockPos pos,
+                                            net.minecraft.world.level.block.state.BlockState state) {
+        // Nothing to do on 26.1: vanilla has already invoked it, and running it again would drop the
+        // inventory twice.
+        //? if <26.1 {
+        /*if (level == null || level.isClientSide()) return;
+        // A sub-level system carrying the block elsewhere: its block entity, contents and all, already lives on
+        // at the new position, so nothing may drop (or be rebuilt) at the old one.
+        if (SubLevels.isMoving(level)) return;
+        if (level.getBlockEntity(pos) instanceof dev.golem.core.data.CompatBlockEntity be) {
+            be.preRemoveSideEffects(pos, state);
+        }
+        *///?}
+    }
+
+    /**
+     * Runs {@link CompatBlock#onBlockRemoved} for a block that has already left {@code pos} by a path that never
+     * reports it: a write straight into a chunk section. Does nothing for a block that is not a
+     * {@link CompatBlock}, so it is cheap to call for every cell of a bulk clear.
+     *
+     * <p>A multiblock tearing itself down or a light rebuilding its beam lives in the removal hook, which a
+     * section write skips on every node.
+     */
+    public static void blockRemoved(ServerLevel level, net.minecraft.core.BlockPos pos,
+                                    net.minecraft.world.level.block.state.BlockState old) {
+        if (old.getBlock() instanceof CompatBlock block && !level.getBlockState(pos).is(block)) {
+            block.onBlockRemoved(old, level, pos, false);
+        }
+    }
+
+    /**
+     * {@code level.setBlock} that always runs the removed block's {@link CompatBlock#onBlockRemoved}, with or without
+     * {@code Block.UPDATE_NEIGHBORS} in {@code flags}.
+     *
+     * <p>Below 26.1 vanilla calls the removal hook ({@code onRemove}) on every block change. 26.1 calls its
+     * replacement ({@code affectNeighborsAfterRemoval}) only when the flags ask for neighbour updates or a piston
+     * move, so a caller that suppresses neighbour updates for speed (a nuke clearing millions of blocks) would
+     * lose every multiblock teardown on 26.1 alone. This gives 26.1 the older contract and is a plain
+     * {@code setBlock} below it. Returns what {@code setBlock} returned.
+     */
+    public static boolean setBlockWithRemoval(ServerLevel level, net.minecraft.core.BlockPos pos,
+                                              net.minecraft.world.level.block.state.BlockState state, int flags) {
+        //? if >=26.1 {
+        net.minecraft.world.level.block.state.BlockState old = level.getBlockState(pos);
+        boolean changed = level.setBlock(pos, state, flags);
+        if (changed && (flags & (net.minecraft.world.level.block.Block.UPDATE_NEIGHBORS
+                | net.minecraft.world.level.block.Block.UPDATE_MOVE_BY_PISTON)) == 0) {
+            blockRemoved(level, pos, old);
+        }
+        return changed;
+        //?} else {
+        /*return level.setBlock(pos, state, flags);
+        *///?}
+    }
+
+    /**
+     * Marks a chunk as needing to be written back to disk.
+     *
+     * <p>26.1 replaced the {@code setUnsaved(boolean)} setter with {@code markUnsaved()}; there is no
+     * "mark saved" direction on 26.1, so only the one useful direction is exposed here. Callers that
+     * write into a chunk's sections behind vanilla's back have to do this themselves, since nothing else
+     * will.
+     */
+    public static void markUnsaved(net.minecraft.world.level.chunk.ChunkAccess chunk) {
+        //? if >=26.1 {
+        chunk.markUnsaved();
+        //?} else {
+        /*chunk.setUnsaved(true);
+        *///?}
+    }
+
+    /**
+     * Tells the chunk source that a section flipped between "has blocks" and "is all air".
+     *
+     * <p>26.1 added this call to {@code LevelChunk.setBlockState}; below it there is no such hook and
+     * nothing to do. Only callers that write into a chunk's sections behind vanilla's back need it.
+     * Vanilla makes the call itself on the normal path.
+     */
+    public static void onSectionEmptinessChanged(net.minecraft.server.level.ServerLevel level,
+                                                 int chunkX, int sectionY, int chunkZ, boolean empty) {
+        //? if >=26.1 {
+        level.getChunkSource().onSectionEmptinessChanged(chunkX, sectionY, chunkZ, empty);
+        //?}
+    }
+
+    /**
+     * Notifies the six blocks around {@code pos} that the block there changed.
+     *
+     * <p>26.1 added a redstone {@code Orientation} argument that gives wire updates a direction;
+     * null is the "no particular direction" case and is what vanilla itself passes from most call sites.
+     */
+    public static void updateNeighborsAt(Level level, net.minecraft.core.BlockPos pos,
+                                         net.minecraft.world.level.block.Block block) {
+        //? if >=26.1 {
+        level.updateNeighborsAt(pos, block, null);
+        //?} else {
+        /*level.updateNeighborsAt(pos, block);
+        *///?}
+    }
+
+    /**
+     * Whether a chunk is in the level's forced-chunk set (a {@code /forceload}, a GameTest plot, another mod's
+     * {@code setChunkForced}). That set is one flag per chunk, not a refcount, so a caller that forces a chunk
+     * already in it must not clear it again when it lets go. 26.1 renamed {@code getForcedChunks} to
+     * {@code getForceLoadedChunks} and {@code ChunkPos.asLong} to {@code ChunkPos.pack}.
+     */
+    public static boolean isChunkForced(ServerLevel level, int chunkX, int chunkZ) {
+        //? if >=26.1 {
+        return level.getForceLoadedChunks().contains(net.minecraft.world.level.ChunkPos.pack(chunkX, chunkZ));
+        //?} else {
+        /*return level.getForcedChunks().contains(net.minecraft.world.level.ChunkPos.asLong(chunkX, chunkZ));
+        *///?}
+    }
+
+    /**
+     * Runs the "this block was removed" hook on a cell's neighbours.
+     *
+     * <p>Vanilla fires it from inside {@code LevelChunk.setBlockState} when the update flags carry
+     * {@code UPDATE_NEIGHBORS}. Callers that write into a chunk's sections behind vanilla's back skip it
+     * and have to dispatch it themselves, or containers never drop and rails never re-link.
+     *
+     * <p>26.1 renamed it from {@code onRemove(state, level, pos, newState, moved)} to
+     * {@code affectNeighborsAfterRemoval(level, pos, moved)} and drops the new state.
+     */
+    public static void affectNeighborsAfterRemoval(ServerLevel level, net.minecraft.core.BlockPos pos,
+                                                   net.minecraft.world.level.block.state.BlockState oldState) {
+        //? if >=26.1 {
+        oldState.affectNeighborsAfterRemoval(level, pos, false);
+        //?} else {
+        /*oldState.onRemove(level, pos, net.minecraft.world.level.block.Blocks.AIR.defaultBlockState(), false);
+        *///?}
+    }
+
+    // Game rules and entity world-mutation permissions
+
+    /**
+     * Whether {@code entity} may alter the world, the {@code mobGriefing} rule. NeoForge additionally
+     * fires an event here; the gamerule is the portable answer and what Fabric gives on every version.
+     */
+    public static boolean canEntityGrief(ServerLevel level, Entity entity) {
+        return mobGriefing(level);
+    }
+
+    /** The {@code mobGriefing} game rule across the 26.1 typed game-rule API change. */
+    public static boolean mobGriefing(ServerLevel level) {
+        //? if >=26.1 {
+        return level.getGameRules().get(net.minecraft.world.level.gamerules.GameRules.MOB_GRIEFING);
+        //?} else {
+        /*return level.getGameRules().getBoolean(net.minecraft.world.level.GameRules.RULE_MOBGRIEFING);
+        *///?}
+    }
+
+    /** The {@code doMobLoot} game rule across the 26.1 typed game-rule API change. */
+    public static boolean mobLoot(ServerLevel level) {
+        //? if >=26.1 {
+        return level.getGameRules().get(net.minecraft.world.level.gamerules.GameRules.MOB_DROPS);
+        //?} else {
+        /*return level.getGameRules().getBoolean(net.minecraft.world.level.GameRules.RULE_DOMOBLOOT);
+        *///?}
+    }
+
+    /** The {@code doEntityDrops} game rule across the 26.1 typed game-rule API change. */
+    public static boolean entityDrops(ServerLevel level) {
+        //? if >=26.1 {
+        return level.getGameRules().get(net.minecraft.world.level.gamerules.GameRules.ENTITY_DROPS);
+        //?} else {
+        /*return level.getGameRules().getBoolean(net.minecraft.world.level.GameRules.RULE_DOENTITYDROPS);
+        *///?}
+    }
+
+    /** The {@code doTileDrops} game rule across the 26.1 typed game-rule API change. */
+    public static boolean blockDrops(ServerLevel level) {
+        //? if >=26.1 {
+        return level.getGameRules().get(net.minecraft.world.level.gamerules.GameRules.BLOCK_DROPS);
+        //?} else {
+        /*return level.getGameRules().getBoolean(net.minecraft.world.level.GameRules.RULE_DOBLOCKDROPS);
+        *///?}
+    }
+
+    /**
+     * Whether a mob may break {@code state} at {@code pos}. Vanilla has no such question; the loader
+     * events that answer it are not bridged, so the only objectors are {@link Protection} providers.
+     */
+    public static boolean canEntityDestroyBlock(ServerLevel level, net.minecraft.core.BlockPos pos,
+                                                net.minecraft.world.level.block.state.BlockState state,
+                                                net.minecraft.world.entity.LivingEntity entity) {
+        return Protection.mayAlter(level, pos, Protection.Source.of(entity), Protection.Cause.TERRAFORM);
+    }
+
+    /**
+     * Drops an item from an entity across the 26.1 {@code spawnAtLocation(ServerLevel, ...)} change.
+     * The override side lives in the {@code dev.golem.core.data} entity facades.
+     */
+    public static net.minecraft.world.entity.item.ItemEntity spawnAtLocation(Entity entity, ServerLevel level,
+                                                                             ItemStack stack) {
+        //? if >=26.1 {
+        return entity.spawnAtLocation(level, stack);
+        //?} else {
+        /*return entity.spawnAtLocation(stack);
+        *///?}
+    }
+
+    /** {@link #spawnAtLocation(Entity, ServerLevel, ItemStack)} with the vertical offset overload. */
+    public static net.minecraft.world.entity.item.ItemEntity spawnAtLocation(Entity entity, ServerLevel level,
+                                                                             ItemStack stack, float offset) {
+        //? if >=26.1 {
+        return entity.spawnAtLocation(level, stack, offset);
+        //?} else {
+        /*return entity.spawnAtLocation(stack, offset);
+        *///?}
+    }
+
+    /** {@code Mob.doHurtTarget} across the 26.1 explicit-level change. */
+    public static boolean doHurtTarget(net.minecraft.world.entity.Mob mob, ServerLevel level, Entity target) {
+        //? if >=26.1 {
+        return mob.doHurtTarget(level, target);
+        //?} else {
+        /*return mob.doHurtTarget(target);
+        *///?}
+    }
+
+    /** {@code LivingEntity.isInvulnerableTo} across the 26.1 explicit-level change. */
+    public static boolean isInvulnerableTo(net.minecraft.world.entity.LivingEntity entity, ServerLevel level,
+                                           DamageSource source) {
+        //? if >=26.1 {
+        return entity.isInvulnerableTo(level, source);
+        //?} else {
+        /*return entity.isInvulnerableTo(source);
+        *///?}
+    }
+
+    /** {@code Entity.lerpMotion} across the 26.1 vector-argument change. */
+    public static void lerpMotion(Entity entity, net.minecraft.world.phys.Vec3 movement) {
+        //? if >=26.1 {
+        entity.lerpMotion(movement);
+        //?} else {
+        /*entity.lerpMotion(movement.x, movement.y, movement.z);
+        *///?}
+    }
+    /** The explosion knockback resistance attribute (added in 1.21); 0 where the attribute does not exist. */
+    public static double explosionKnockbackResistance(net.minecraft.world.entity.LivingEntity living) {
+        //? if >=1.21.1 {
+        return living.getAttributeValue(net.minecraft.world.entity.ai.attributes.Attributes.EXPLOSION_KNOCKBACK_RESISTANCE);
+        //?} else {
+        /*return 0.0D;
+        *///?}
+    }
+
+    /**
+     * Pushes the entity's exact server position to every tracking client at once (1.7
+     * {@code setPositionAndUpdate} after a bounce), across the teleport-packet rename.
+     */
+    public static void syncPosition(Entity entity) {
+        if (!(entity.level() instanceof ServerLevel server)) return;
+        //? if >=26.1 {
+        server.getChunkSource().chunkMap.sendToTrackingPlayers(entity,
+                net.minecraft.network.protocol.game.ClientboundEntityPositionSyncPacket.of(entity));
+        //?} else {
+        /*server.getChunkSource().chunkMap.broadcast(entity,
+                new net.minecraft.network.protocol.game.ClientboundTeleportEntityPacket(entity));
+        *///?}
+    }
+
+
+    /** 26.1 {@code VehicleEntity.setInitialPos}: place a freshly created vehicle with no motion and no prior position. */
+    public static void setInitialPos(Entity entity, double x, double y, double z) {
+        entity.setPos(x, y, z);
+        entity.setDeltaMovement(net.minecraft.world.phys.Vec3.ZERO);
+        entity.xo = x;
+        entity.yo = y;
+        entity.zo = z;
+    }
+
+    /** {@code Entity.kill}, which took the level from 26.1 on. */
+    public static void kill(Entity entity, ServerLevel level) {
+        //? if >=26.1 {
+        entity.kill(level);
+        //?} else {
+        /*entity.kill();
+        *///?}
+    }
+
+    /** Sends a packet to every client tracking {@code entity}, across the chunk-map method rename. */
+    public static void sendToTrackingPlayers(Entity entity,
+            net.minecraft.network.protocol.Packet<? super net.minecraft.network.protocol.game.ClientGamePacketListener> packet) {
+        if (!(entity.level() instanceof ServerLevel server)) return;
+        //? if >=26.1 {
+        server.getChunkSource().chunkMap.sendToTrackingPlayers(entity, packet);
+        //?} else {
+        /*server.getChunkSource().chunkMap.broadcast(entity, packet);
+        *///?}
+    }
+
+    /** 26.1 {@code Block.UPDATE_SKIP_BLOCK_ENTITY_SIDEEFFECTS}; no such flag exists before it (0 = no-op bit). */
+    public static final int UPDATE_SKIP_BLOCK_ENTITY_SIDEEFFECTS =
+            //? if >=26.1 {
+            net.minecraft.world.level.block.Block.UPDATE_SKIP_BLOCK_ENTITY_SIDEEFFECTS;
+            //?} else {
+            /*0;
+            *///?}
+
+    /** A dust particle of one packed RGB colour, across the colour-argument type change. */
+    public static net.minecraft.core.particles.DustParticleOptions dust(int rgb, float scale) {
+        //? if >=26.1 {
+        return new net.minecraft.core.particles.DustParticleOptions(rgb, scale);
+        //?} else {
+        /*return new net.minecraft.core.particles.DustParticleOptions(
+                net.minecraft.world.phys.Vec3.fromRGB24(rgb).toVector3f(), scale);
+        *///?}
+    }
+
+    /** A boss bar owned by {@code owner}; 26.1 keys it by the owner's UUID, older versions mint their own. */
+    public static net.minecraft.server.level.ServerBossEvent bossEvent(Entity owner, net.minecraft.network.chat.Component name,
+            net.minecraft.world.BossEvent.BossBarColor color, net.minecraft.world.BossEvent.BossBarOverlay overlay) {
+        return bossEvent(owner.getUUID(), name, color, overlay);
+    }
+
+    /** A bar owned by persistent world state rather than an entity. */
+    public static ServerBossEvent bossEvent(UUID id, Component name,
+            BossEvent.BossBarColor color, BossEvent.BossBarOverlay overlay) {
+        //? if >=26.1 {
+        return new ServerBossEvent(id, name, color, overlay);
+        //?} else {
+        /*return new net.minecraft.server.level.ServerBossEvent(name, color, overlay);
+        *///?}
+    }
+
+    /** The rider's forward/back input as -1/0/1 (26.1 {@code getLastClientInput}; earlier the {@code zza} axis). */
+    public static int clientForwardInput(net.minecraft.server.level.ServerPlayer player) {
+        //? if >=26.1 {
+        boolean f = player.getLastClientInput().forward();
+        boolean b = player.getLastClientInput().backward();
+        return f == b ? 0 : f ? 1 : -1;
+        //?} else {
+        /*return player.zza > 0 ? 1 : player.zza < 0 ? -1 : 0;
+        *///?}
+    }
+
+    /** Whether the server player holds sneak (1.21.2 {@code getLastClientInput}; earlier {@code isShiftKeyDown}). */
+    public static boolean clientSneakHeld(ServerPlayer player) {
+        //? if >=1.21.2 {
+        return player.getLastClientInput().shift();
+        //?} else {
+        /*return player.isShiftKeyDown();
+        *///?}
+    }
+
+    /** A random item of a tag, or empty when the tag is empty/absent (26.1 {@code Registry.getRandomElementOf}). */
+    public static java.util.Optional<net.minecraft.world.item.Item> randomItemOf(
+            net.minecraft.tags.TagKey<net.minecraft.world.item.Item> tag, net.minecraft.util.RandomSource random) {
+        //? if >=26.1 {
+        return net.minecraft.core.registries.BuiltInRegistries.ITEM.getRandomElementOf(tag, random)
+                .map(net.minecraft.core.Holder::value);
+        //?} else {
+        /*return net.minecraft.core.registries.BuiltInRegistries.ITEM.getTag(tag)
+                .flatMap(named -> named.getRandomElement(random)).map(net.minecraft.core.Holder::value);
+        *///?}
+    }
+
+    /** One large-ball firework burst of a single colour with trail and flicker, in each era's explosion format. */
+    public static void fireworkBurst(net.minecraft.world.level.Level level, double x, double y, double z, int color) {
+        //? if >=1.20.5 {
+        level.createFireworks(x, y, z, 0.0D, 0.0D, 0.0D, java.util.List.of(
+                new net.minecraft.world.item.component.FireworkExplosion(
+                        net.minecraft.world.item.component.FireworkExplosion.Shape.LARGE_BALL,
+                        it.unimi.dsi.fastutil.ints.IntList.of(color), it.unimi.dsi.fastutil.ints.IntList.of(), true, true)));
+        //?} else {
+        /*net.minecraft.nbt.CompoundTag explosion = new net.minecraft.nbt.CompoundTag();
+        explosion.putByte("Type", (byte) 1); // LARGE_BALL
+        explosion.putIntArray("Colors", new int[]{color});
+        explosion.putBoolean("Trail", true);
+        explosion.putBoolean("Flicker", true);
+        net.minecraft.nbt.ListTag explosions = new net.minecraft.nbt.ListTag();
+        explosions.add(explosion);
+        net.minecraft.nbt.CompoundTag fireworks = new net.minecraft.nbt.CompoundTag();
+        fireworks.put("Explosions", explosions);
+        level.createFireworks(x, y, z, 0.0D, 0.0D, 0.0D, fireworks);
+        *///?}
+    }
+
+    /** {@code -1} water pathfinding malus (26.1 {@code PathType.WATER}; {@code BlockPathTypes.WATER} before 1.20.5). */
+    public static void avoidWater(net.minecraft.world.entity.Mob mob) {
+        //? if >=1.20.5 {
+        mob.setPathfindingMalus(net.minecraft.world.level.pathfinder.PathType.WATER, -1.0F);
+        //?} else {
+        /*mob.setPathfindingMalus(net.minecraft.world.level.pathfinder.BlockPathTypes.WATER, -1.0F);
+        *///?}
+    }
+
+    /** The attacker's looting level (1.7 {@code EnchantmentHelper.getLootingModifier}), across the holder-keyed enchantment API. */
+    public static int lootingLevel(ServerLevel level, net.minecraft.world.entity.LivingEntity attacker) {
+        //? if >=1.21.1 {
+        net.minecraft.core.Holder<net.minecraft.world.item.enchantment.Enchantment> looting = level.registryAccess()
+                .lookupOrThrow(net.minecraft.core.registries.Registries.ENCHANTMENT)
+                .getOrThrow(net.minecraft.world.item.enchantment.Enchantments.LOOTING);
+        return net.minecraft.world.item.enchantment.EnchantmentHelper.getEnchantmentLevel(looting, attacker);
+        //?} else {
+        /*return net.minecraft.world.item.enchantment.EnchantmentHelper.getMobLooting(attacker);
+        *///?}
+    }
+
+    /** Creative-style infinite materials (1.20.5 {@code hasInfiniteMaterials}; {@code instabuild} before). */
+    public static boolean hasInfiniteMaterials(net.minecraft.world.entity.player.Player player) {
+        //? if >=1.20.5 {
+        return player.hasInfiniteMaterials();
+        //?} else {
+        /*return player.getAbilities().instabuild;
+        *///?}
+    }
+
+    /** Post-attack enchantment effects on a hit (1.21.1's item-source form; the paired hurt/damage hooks before). */
+    public static void doPostAttackEffects(ServerLevel level, net.minecraft.world.entity.LivingEntity target,
+                                           net.minecraft.world.damagesource.DamageSource source) {
+        //? if >=1.21.1 {
+        net.minecraft.world.item.enchantment.EnchantmentHelper.doPostAttackEffectsWithItemSource(level, target, source, null);
+        //?} else {
+        /*if (source.getEntity() instanceof net.minecraft.world.entity.LivingEntity attacker) {
+            net.minecraft.world.item.enchantment.EnchantmentHelper.doPostHurtEffects(target, attacker);
+            net.minecraft.world.item.enchantment.EnchantmentHelper.doPostDamageEffects(attacker, target);
+        }
+        *///?}
+    }
+}

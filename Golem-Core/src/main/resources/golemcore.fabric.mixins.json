@@ -1,0 +1,28 @@
+{
+  "required": true,
+  "minVersion": "0.8",
+  "package": "dev.golem.core.mixin",
+  "refmap": "golemcore.refmap.json",
+  "plugin": "dev.golem.core.gametest.GameTestMixinPlugin",
+  "compatibilityLevel": "${mixin_compatibility}",
+  "mixins": [
+    "MixinLivingEntitySwing",
+    "MixinVegetationSoil",
+    "MixinNaturalSpawnerCheck",
+    "MixinLivingEntityUseFinish",
+    "MixinMobFinalizeSpawnCheck",
+    "MixinServerLevelSpawnCancel",
+    "MixinBlockItemPlaced",
+    "MixinFlintAndSteelPlaced",
+    "MixinFireChargePlaced"${legacy_explosion_mixins}
+  ],
+  "client": [
+    "MixinCameraFov",
+    "MixinFovMultiplier",
+    "MixinFogRendererModifiers"${legacy_client_mixins}${debug_line_mixins}
+  ],
+  "server": [],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}

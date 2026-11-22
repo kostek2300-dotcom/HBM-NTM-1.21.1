@@ -1,0 +1,150 @@
+# Builds every node (chiseledBuild) against Golem Core's main branch and publishes the release jars,
+# HBM's and the matching Golem Core jars it was built against, as a GitHub pre-release.
+# Runs on pushes to main that change a build input (see paths below) and on demand.
+name: Pre-release
+
+on:
+  push:
+    branches: [main]
+    # Only changes that can alter a jar: sources, build scripts and per-node versions, and the license
+    # files packed into every jar. Docs, CHANGELOG.md, harness scenarios and .github/ do not start a build.
+    paths:
+      - 'src/**'
+      - 'versions/**'
+      - 'gradle/**'
+      - '*.gradle.kts'
+      - 'gradle.properties'
+      - 'gradlew'
+      - 'gradlew.bat'
+      - 'LICENSE*'
+  workflow_dispatch:
+    inputs:
+      golem_ref:
+        description: Golem Core branch, tag or commit to build against
+        default: main
+
+permissions:
+  contents: write
+
+concurrency:
+  group: prerelease-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      # settings.gradle.kts includes ../Golem-Core as a composite build, so the two repos are checked
+      # out side by side exactly as in the development layout.
+      - uses: actions/checkout@v4
+        with:
+          path: NTM-Continuum
+
+      - uses: actions/checkout@v4
+        with:
+          repository: Warfactory-Official/Golem-Core
+          ref: ${{ inputs.golem_ref || 'main' }}
+          path: Golem-Core
+          # Only needed while Golem Core is private: a fine-grained token with read access to it.
+          token: ${{ secrets.GOLEM_CORE_TOKEN || github.token }}
+
+      # Each node compiles on its own toolchain (1.20.1 -> 17, 1.21.1 -> 21, 26.1 -> 25). The last
+      # one listed becomes JAVA_HOME, which runs Gradle itself.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: |
+            17
+            21
+            25
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      # Golem Core first: the obfuscated Fabric nodes resolve its jar at configuration time and refuse
+      # one older than its sources (checkCompositeJarFreshness), so it must be on disk before HBM configures.
+      - name: Build Golem Core
+        # ModDevGradle builds Minecraft through its binary pipeline whenever CI=true (GitHub always sets
+        # it). That jar keeps Forge's signature digests over remapped classes (SecurityException in the
+        # 1.20.1 Forge tests) and loses parameter names, so build with the local recompile pipeline.
+        env:
+          CI: "false"
+        working-directory: Golem-Core
+        run: bash ./gradlew chiseledBuild --no-daemon --stacktrace
+
+      - name: Build HBM
+        # ModDevGradle builds Minecraft through its binary pipeline whenever CI=true (GitHub always sets
+        # it). That jar keeps Forge's signature digests over remapped classes (SecurityException in the
+        # 1.20.1 Forge tests) and loses parameter names, so build with the local recompile pipeline.
+        env:
+          CI: "false"
+        working-directory: NTM-Continuum
+        run: bash ./gradlew chiseledBuild --no-daemon --stacktrace
+
+      # Builds count from 1 for each mod.version: the next number follows the newest pre-release of the same version
+      # (the last step keeps only the newest), so a version bump starts again at build 1.
+      - name: Build number
+        id: build
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          version=$(grep -E '^mod.version=' NTM-Continuum/gradle.properties | cut -d= -f2 | tr -d '[:space:]')
+          last=$(gh release list --repo "$REPO" --limit 200 --json tagName,isPrerelease \
+            --jq '.[] | select(.isPrerelease) | .tagName' \
+            | awk -v p="v${version}-build." 'index($0, p) == 1 && substr($0, length(p) + 1) ~ /^[0-9]+$/ { print substr($0, length(p) + 1) }' \
+            | sort -n | tail -n 1)
+          echo "number=$(( ${last:-0} + 1 ))" >> "$GITHUB_OUTPUT"
+          echo "Build $(( ${last:-0} + 1 )) of $version"
+
+      - name: Collect release jars
+        id: jars
+        run: |
+          mkdir -p dist
+          # build/libs holds the release jar per node (remapJar/reobfJar/jar); devlibs is not shipped.
+          for repo in NTM-Continuum Golem-Core; do
+            find $repo/versions/*/build/libs -maxdepth 1 -name '*.jar' ! -name '*-sources.jar' -exec cp {} dist/ \;
+          done
+          # Tag every jar with this build's number, so jars from different builds never share a file name:
+          # hbm-fabric-0.1.0+1.20.1.jar -> hbm-fabric-0.1.0+1.20.1-build.42.jar
+          for jar in dist/*.jar; do
+            mv "$jar" "${jar%.jar}-build.${{ steps.build.outputs.number }}.jar"
+          done
+          ls -l dist
+          ls dist | grep -q '^hbm-' || { echo "No HBM jars produced"; exit 1; }
+          version=$(grep -E '^mod.version=' NTM-Continuum/gradle.properties | cut -d= -f2 | tr -d '[:space:]')
+          echo "tag=v${version}-build.${{ steps.build.outputs.number }}" >> "$GITHUB_OUTPUT"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "golem=$(git -C Golem-Core rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Create pre-release
+        uses: softprops/action-gh-release@v2
+        with:
+          repository: ${{ github.repository }}
+          tag_name: ${{ steps.jars.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: NTM - Continuum ${{ steps.jars.outputs.version }} build ${{ steps.build.outputs.number }}
+          prerelease: true
+          generate_release_notes: true
+          body: |
+            Automated pre-release build. Not for general use.
+
+            Each `hbm-<loader>-<version>+<mc>` jar needs the `golemcore-<loader>` jar for the same `<mc>` (included,
+            built from Golem Core `${{ steps.jars.outputs.golem }}`).
+          files: dist/*.jar
+
+      # Keep only the newest automated build: delete every older pre-release this workflow made (its tags
+      # end in -build.<build number>) along with its tag. Real releases and beta/alpha tags never match.
+      - name: Delete previous pre-releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          KEEP: ${{ steps.jars.outputs.tag }}
+        run: |
+          gh release list --repo "$REPO" --limit 200 --json tagName,isPrerelease \
+            --jq '.[] | select(.isPrerelease) | .tagName' \
+            | { grep -E '^v.+-build\.[0-9]+$' || true; } | { grep -vxF "$KEEP" || true; } \
+            | while read -r tag; do
+                echo "Deleting pre-release $tag"
+                gh release delete "$tag" --repo "$REPO" --cleanup-tag --yes
+              done

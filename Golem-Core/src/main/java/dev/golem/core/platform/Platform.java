@@ -1,0 +1,143 @@
+package dev.golem.core.platform;
+
+import java.util.Map;
+import java.util.TreeMap;
+import org.jspecify.annotations.Nullable;
+
+/**
+ * Physical-side and loader questions whose spelling changed independently of Minecraft.
+ */
+public final class Platform {
+
+    private Platform() {}
+
+    /**
+     * Whether this is a physical client. NeoForge moved the accessor from a static field to
+     * {@code FMLLoader.getCurrent().getDist()} in 26.1; Forge and older NeoForge expose it statically.
+     * Fabric answers through its own environment API.
+     */
+    public static boolean isClient() {
+        //? if fabric {
+        /*return net.fabricmc.api.EnvType.CLIENT == net.fabricmc.loader.api.FabricLoader.getInstance().getEnvironmentType();
+        *///?} elif neoforge && >=26.1 {
+        return net.neoforged.fml.loading.FMLLoader.getCurrent().getDist() == net.neoforged.api.distmarker.Dist.CLIENT;
+        //?} elif neoforge {
+        /*return net.neoforged.fml.loading.FMLLoader.getDist() == net.neoforged.api.distmarker.Dist.CLIENT;
+        *///?} elif forge {
+        /*return net.minecraftforge.fml.loading.FMLLoader.getDist() == net.minecraftforge.api.distmarker.Dist.CLIENT;
+        *///?}
+    }
+
+    /** Human-readable loader name. */
+    public static String name() {
+        //? if fabric {
+        /*return "Fabric";
+        *///?} elif neoforge {
+        return "NeoForge";
+        //?} elif forge {
+        /*return "Forge";
+        *///?}
+    }
+
+    /** The namespace other mods' common tags live in: {@code forge} on Forge, {@code c} everywhere else. */
+    public static String conventionNamespace() {
+        //? if forge {
+        /*return "forge";
+        *///?} else {
+        return "c";
+        //?}
+    }
+
+    /** Whether the current loader has loaded {@code modId}. */
+    public static boolean isModLoaded(String modId) {
+        //? if fabric {
+        /*return net.fabricmc.loader.api.FabricLoader.getInstance().isModLoaded(modId);
+        *///?} elif neoforge {
+        return net.neoforged.fml.ModList.get().isLoaded(modId);
+        //?} elif forge {
+        /*return net.minecraftforge.fml.ModList.get().isLoaded(modId);
+        *///?}
+    }
+
+    /** Tests availability without running the target class's initializer. */
+    public static boolean isClassLoadable(String name, ClassLoader loader) {
+        try {
+            Class.forName(name, false, loader);
+            return true;
+        } catch (ClassNotFoundException | LinkageError unavailable) {
+            // Missing classes and incomplete linkage both make an optional API unavailable.
+            return false;
+        }
+    }
+
+    /** The loaded version of {@code modId}, or null when it is not loaded. */
+    public static @Nullable String modVersion(String modId) {
+        //? if fabric {
+        /*return net.fabricmc.loader.api.FabricLoader.getInstance().getModContainer(modId)
+                .map(c -> c.getMetadata().getVersion().getFriendlyString()).orElse(null);
+        *///?} elif neoforge {
+        return net.neoforged.fml.ModList.get().getModContainerById(modId)
+                .map(c -> c.getModInfo().getVersion().toString()).orElse(null);
+        //?} elif forge {
+        /*return net.minecraftforge.fml.ModList.get().getModContainerById(modId)
+                .map(c -> c.getModInfo().getVersion().toString()).orElse(null);
+        *///?}
+    }
+
+    /** Every loaded mod's id and version, sorted by id. */
+    public static Map<String, String> loadedMods() {
+        Map<String, String> mods = new TreeMap<>();
+        //? if fabric {
+        /*for (var mod : net.fabricmc.loader.api.FabricLoader.getInstance().getAllMods()) {
+            mods.put(mod.getMetadata().getId(), mod.getMetadata().getVersion().getFriendlyString());
+        }
+        *///?} elif neoforge {
+        for (var mod : net.neoforged.fml.ModList.get().getMods()) mods.put(mod.getModId(), mod.getVersion().toString());
+        //?} elif forge {
+        /*for (var mod : net.minecraftforge.fml.ModList.get().getMods()) mods.put(mod.getModId(), mod.getVersion().toString());
+        *///?}
+        return mods;
+    }
+
+    /** Whether {@code player} is the loader's fake player (a machine or block acting as a player). */
+    public static boolean isFakePlayer(net.minecraft.world.entity.player.Player player) {
+        //? if fabric {
+        /*return player instanceof net.fabricmc.fabric.api.entity.FakePlayer;
+        *///?} elif neoforge {
+        return player instanceof net.neoforged.neoforge.common.util.FakePlayer;
+        //?} elif forge {
+        /*return player instanceof net.minecraftforge.common.util.FakePlayer;
+        *///?}
+    }
+
+    /** Whether the current loader is running a development environment. */
+    public static boolean isDevelopment() {
+        //? if fabric {
+        /*return net.fabricmc.loader.api.FabricLoader.getInstance().isDevelopmentEnvironment();
+        *///?} elif neoforge && >=26.1 {
+        return !net.neoforged.fml.loading.FMLLoader.getCurrent().isProduction();
+        //?} elif neoforge {
+        /*return !net.neoforged.fml.loading.FMLLoader.isProduction();
+        *///?} elif forge {
+        /*return !net.minecraftforge.fml.loading.FMLLoader.isProduction();
+        *///?}
+    }
+
+    /**
+     * Whether this Minecraft has the item-definition layer ({@code assets/<ns>/items/*.json}, 1.21.4+). Below it
+     * an item's look is its {@code models/item} file alone, and a self-drawn item is one whose model chain ends at
+     * {@code builtin/entity}. A data-shape fact for checks that only mean something on one side of that line;
+     * asking for a marker file instead breaks as soon as that file ships on every node.
+     */
+    public static boolean hasItemDefinitions() {
+        //? if >=1.21.4 {
+        return true;
+        //?} else {
+        /*return false;
+        *///?}
+    }
+
+    public static String environmentName() {
+        return isDevelopment() ? "development" : "production";
+    }
+}
